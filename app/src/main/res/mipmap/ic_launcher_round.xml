@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="315"
+                android:startColor="@color/icon_blue"
+                android:endColor="@color/icon_green" />
+        </shape>
+    </item>
+    <item
+        android:gravity="center"
+        android:width="68dp"
+        android:height="68dp"
+        android:drawable="@drawable/ic_launcher_legacy_mark" />
+</layer-list>
