@@ -18,6 +18,8 @@
 
 - `app/`: Android 应用（仅扫码 + NFC 签名）
 - `satochip-lib/`: 从 Toporin `Satochip-Java` 复制并改造的本地库模块
+- `card-applet/SatochipApplet/`: Satochip JavaCard CAP 编译源码（来源于 Toporin `SatochipApplet`）
+- `card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md`: CAP 编译、安装、验证步骤（中文）
 
 ## 编译
 
@@ -76,6 +78,19 @@ adb shell am start -n com.smartcard.signer/.MainActivity
 5. 再调用 `cardBip32GetExtendedKey("m/44'/60'/0'/0/0", null, null)` 校验地址。
 
 注意：导入助记词属于高敏操作，建议只在完全离线、可信电脑执行。
+
+## CAP 编译与写卡
+
+本仓库已经包含 CAP 编译源码与操作说明：
+
+- 源码目录：`card-applet/SatochipApplet/`
+- 中文步骤文档：`card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md`
+
+可按文档在离线 Linux/Tails + ACR39U 上完成：
+
+1. 编译 `SatoChip-3.0.4.cap`
+2. 用 `GlobalPlatformPro (gp.jar)` 安装到 J3R180 白卡
+3. 用 `opensc-tool` 执行 `SELECT AID` 验证安装
 
 ## 当前范围
 
