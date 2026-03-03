@@ -20,6 +20,7 @@
 - `satochip-lib/`: 从 Toporin `Satochip-Java` 复制并改造的本地库模块
 - `card-applet/SatochipApplet/`: Satochip JavaCard CAP 编译源码（来源于 Toporin `SatochipApplet`）
 - `card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md`: CAP 编译、安装、验证步骤（中文）
+- `card-applet/TAILS_SATOCHIP_UTILS_OFFLINE_GUIDE.zh-CN.md`: Tails OS 离线用 Satochip-Utils 设置 PIN + 导入助记词教程
 
 ## 编译
 
@@ -91,6 +92,19 @@ adb shell am start -n com.smartcard.signer/.MainActivity
 1. 编译 `SatoChip-3.0.4.cap`
 2. 用 `GlobalPlatformPro (gp.jar)` 安装到 J3R180 白卡
 3. 用 `opensc-tool` 执行 `SELECT AID` 验证安装
+
+## Tails 离线导入教程（Satochip-Utils）
+
+如果你使用 `Satochip-Utils` 图形界面来恢复助记词，请看：
+
+- `card-applet/TAILS_SATOCHIP_UTILS_OFFLINE_GUIDE.zh-CN.md`
+
+文档包含：
+
+1. 离线环境准备
+2. 先设置 PIN（`Setup my card`）
+3. 再导入助记词（`Setup Seed`）
+4. 成功校验与常见问题
 
 ## 当前范围
 
