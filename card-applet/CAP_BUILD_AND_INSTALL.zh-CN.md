@@ -2,6 +2,11 @@
 
 本文档对应本仓库目录：`card-applet/SatochipApplet/`。
 
+如果不修改源码，可直接使用预编译 CAP：
+
+- `card-applet/prebuilt/SatoChip-3.0.4.cap`
+- `card-applet/prebuilt/SHA256SUMS.txt`
+
 ## 1. 前提条件
 
 - 系统：Linux/Tails（建议离线环境进行助记词导入和关键操作）

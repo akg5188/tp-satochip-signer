@@ -21,6 +21,7 @@
 - `card-applet/SatochipApplet/`: Satochip JavaCard CAP 编译源码（来源于 Toporin `SatochipApplet`）
 - `card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md`: CAP 编译、安装、验证步骤（中文）
 - `card-applet/TAILS_SATOCHIP_UTILS_OFFLINE_GUIDE.zh-CN.md`: Tails OS 离线用 Satochip-Utils 设置 PIN + 导入助记词教程
+- `card-applet/prebuilt/`: 已编译 CAP 固件与校验值（可直接下载安装）
 - `backups/satochip-utils/`: Toporin `Satochip-Utils` 全量离线备份（git bundle）
 
 ## 编译
@@ -93,6 +94,11 @@ adb shell am start -n com.smartcard.signer/.MainActivity
 1. 编译 `SatoChip-3.0.4.cap`
 2. 用 `GlobalPlatformPro (gp.jar)` 安装到 J3R180 白卡
 3. 用 `opensc-tool` 执行 `SELECT AID` 验证安装
+
+如果你不改源码，也可直接使用预编译固件：
+
+- `card-applet/prebuilt/SatoChip-3.0.4.cap`
+- `card-applet/prebuilt/SHA256SUMS.txt`
 
 ## Tails 离线导入教程（Satochip-Utils）
 
