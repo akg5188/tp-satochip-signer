@@ -21,6 +21,7 @@
 - `card-applet/SatochipApplet/`: Satochip JavaCard CAP 编译源码（来源于 Toporin `SatochipApplet`）
 - `card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md`: CAP 编译、安装、验证步骤（中文）
 - `card-applet/TAILS_SATOCHIP_UTILS_OFFLINE_GUIDE.zh-CN.md`: Tails OS 离线用 Satochip-Utils 设置 PIN + 导入助记词教程
+- `backups/satochip-utils/`: Toporin `Satochip-Utils` 全量离线备份（git bundle）
 
 ## 编译
 
@@ -105,6 +106,19 @@ adb shell am start -n com.smartcard.signer/.MainActivity
 2. 先设置 PIN（`Setup my card`）
 3. 再导入助记词（`Setup Seed`）
 4. 成功校验与常见问题
+
+## Satochip-Utils 备份（防删库）
+
+本项目已内置 Satochip-Utils 备份文件，路径：
+
+- `backups/satochip-utils/Satochip-Utils-backup-20260303.bundle`
+- `backups/satochip-utils/README-BUNDLE.md`
+
+可用以下命令恢复仓库：
+
+```bash
+git clone backups/satochip-utils/Satochip-Utils-backup-20260303.bundle Satochip-Utils-restore
+```
 
 ## 当前范围
 
