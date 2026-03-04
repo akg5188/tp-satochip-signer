@@ -26,6 +26,7 @@ class UsbCcidCardChannel(
 
     private var seq: Int = 0
     private val ioLock = Any()
+    private var pendingReadBuffer: ByteArray = ByteArray(0)
 
     init {
         if (!connection.claimInterface(ccidInterface, true)) {
@@ -58,7 +59,17 @@ class UsbCcidCardChannel(
     override fun send(cmd: APDUCommand): APDUResponse {
         val response = synchronized(ioLock) {
             ensureOpen()
-            transceiveApdu(cmd.serialize())
+            val apdu = cmd.serialize()
+            runCatching { transceiveApdu(apdu) }.recoverCatching { error ->
+                // Some ACR39U units intermittently return mute/slot errors on first exchange.
+                // Retry once after a power cycle.
+                if (isRecoverableExchangeError(error)) {
+                    recoverCardSession()
+                    transceiveApdu(apdu)
+                } else {
+                    throw error
+                }
+            }.getOrThrow()
         }
         return APDUResponse(response)
     }
@@ -117,6 +128,7 @@ class UsbCcidCardChannel(
             parameter2 = 0x00  // wLevelParameter high
         )
 
+        val responsePayload = ByteArrayOutputStream()
         while (true) {
             val response = readResponse()
             when (response.messageType) {
@@ -133,7 +145,15 @@ class UsbCcidCardChannel(
                     if (iccStatus == CCID_ICC_STATUS_NOT_PRESENT) {
                         throw IOException("智能卡已移除")
                     }
-                    return response.payload
+                    if (response.payload.isNotEmpty()) {
+                        responsePayload.write(response.payload)
+                    }
+
+                    // Some readers may chain a long R-APDU across multiple CCID blocks.
+                    if (!response.hasMoreData()) {
+                        return responsePayload.toByteArray()
+                    }
+                    continue
                 }
 
                 CCID_RDR_TO_PC_SLOT_STATUS -> {
@@ -157,6 +177,20 @@ class UsbCcidCardChannel(
                 }
             }
         }
+    }
+
+    private fun isRecoverableExchangeError(error: Throwable): Boolean {
+        val message = error.message?.lowercase() ?: return false
+        return message.contains("status=0x40") ||
+            message.contains("error=0xfe") ||
+            message.contains("apdu response must be at least 2 bytes") ||
+            message.contains("usb 读取超时")
+    }
+
+    private fun recoverCardSession() {
+        runCatching { powerOff() }
+        pendingReadBuffer = ByteArray(0)
+        powerOn()
     }
 
     private fun sendCommand(
@@ -213,29 +247,32 @@ class UsbCcidCardChannel(
     }
 
     private fun readRawMessage(): ByteArray {
-        val buffer = ByteArray(maxOf(512, bulkIn.maxPacketSize.coerceAtLeast(64)))
-        val output = ByteArrayOutputStream()
-        var expectedLength = -1
+        while (true) {
+            if (pendingReadBuffer.size >= 10) {
+                val expectedLength = 10 + readLe32(pendingReadBuffer, 1)
+                if (pendingReadBuffer.size >= expectedLength) {
+                    val message = pendingReadBuffer.copyOfRange(0, expectedLength)
+                    pendingReadBuffer = pendingReadBuffer.copyOfRange(expectedLength, pendingReadBuffer.size)
+                    return message
+                }
+            }
 
-        while (expectedLength < 0 || output.size() < expectedLength) {
-            val read = connection.bulkTransfer(bulkIn, buffer, buffer.size, timeoutMs)
+            val chunk = ByteArray(maxOf(512, bulkIn.maxPacketSize.coerceAtLeast(64)))
+            val read = connection.bulkTransfer(bulkIn, chunk, chunk.size, timeoutMs)
             if (read <= 0) {
                 throw IOException("USB 读取超时或失败: $read")
             }
-            output.write(buffer, 0, read)
-
-            val bytes = output.toByteArray()
-            if (expectedLength < 0 && bytes.size >= 10) {
-                expectedLength = 10 + readLe32(bytes, 1)
-            }
+            pendingReadBuffer = appendBytes(pendingReadBuffer, chunk.copyOf(read))
         }
+    }
 
-        val full = output.toByteArray()
-        return if (expectedLength > 0 && full.size >= expectedLength) {
-            full.copyOfRange(0, expectedLength)
-        } else {
-            full
-        }
+    private fun appendBytes(head: ByteArray, tail: ByteArray): ByteArray {
+        if (head.isEmpty()) return tail
+        if (tail.isEmpty()) return head
+        val out = ByteArray(head.size + tail.size)
+        System.arraycopy(head, 0, out, 0, head.size)
+        System.arraycopy(tail, 0, out, head.size, tail.size)
+        return out
     }
 
     private fun nextSeq(): Int {
@@ -270,7 +307,11 @@ class UsbCcidCardChannel(
         val error: Int,
         val chain: Int,
         val payload: ByteArray
-    )
+    ) {
+        fun hasMoreData(): Boolean {
+            return (chain and 0x01) != 0
+        }
+    }
 
     private companion object {
         const val CCID_PC_TO_RDR_ICC_POWER_ON = 0x62

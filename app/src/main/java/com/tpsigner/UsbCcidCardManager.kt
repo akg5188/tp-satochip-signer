@@ -157,29 +157,40 @@ class UsbCcidCardManager(
     }
 
     private fun openChannel(device: UsbDevice) {
-        val transport = findCcidTransport(device) ?: return
-        val connection = usbManager.openDevice(device) ?: run {
-            onError("无法打开 USB 读卡器，请检查 OTG 或连接线")
+        val transports = findCcidTransports(device)
+        if (transports.isEmpty()) return
+
+        val openErrors = mutableListOf<String>()
+        for (transport in transports) {
+            val connection = usbManager.openDevice(device) ?: run {
+                onError("无法打开 USB 读卡器，请检查 OTG 或连接线")
+                return
+            }
+
+            val newChannel = try {
+                UsbCcidCardChannel(
+                    device = device,
+                    connection = connection,
+                    ccidInterface = transport.ccidInterface,
+                    bulkIn = transport.bulkIn,
+                    bulkOut = transport.bulkOut
+                )
+            } catch (error: Throwable) {
+                openErrors += "if#${transport.ccidInterface.id}: ${error.message ?: error.javaClass.simpleName}"
+                runCatching { connection.close() }
+                continue
+            }
+
+            disconnectCurrent(notify = false)
+            channel = newChannel
+            connectedDeviceId = device.deviceId
+            listener?.onConnected(newChannel)
             return
         }
 
-        val newChannel = runCatching {
-            UsbCcidCardChannel(
-                device = device,
-                connection = connection,
-                ccidInterface = transport.ccidInterface,
-                bulkIn = transport.bulkIn,
-                bulkOut = transport.bulkOut
-            )
-        }.getOrElse { _ ->
-            runCatching { connection.close() }
-            return
+        if (openErrors.isNotEmpty()) {
+            onError("USB 读卡器已连接，但卡未就绪: ${openErrors.joinToString(" | ")}")
         }
-
-        disconnectCurrent(notify = false)
-        channel = newChannel
-        connectedDeviceId = device.deviceId
-        listener?.onConnected(newChannel)
     }
 
     private fun disconnectCurrent(notify: Boolean) {
@@ -248,10 +259,11 @@ class UsbCcidCardManager(
     }
 
     private fun isSupportedDevice(device: UsbDevice): Boolean {
-        return findCcidTransport(device) != null
+        return findCcidTransports(device).isNotEmpty()
     }
 
-    private fun findCcidTransport(device: UsbDevice): CcidTransport? {
+    private fun findCcidTransports(device: UsbDevice): List<CcidTransport> {
+        val transports = mutableListOf<CcidTransport>()
         for (index in 0 until device.interfaceCount) {
             val usbInterface = device.getInterface(index)
             val looksLikeCcid = usbInterface.interfaceClass == USB_CLASS_CCID
@@ -271,10 +283,10 @@ class UsbCcidCardManager(
                 }
             }
             if (bulkIn != null && bulkOut != null) {
-                return CcidTransport(usbInterface, bulkIn, bulkOut)
+                transports += CcidTransport(usbInterface, bulkIn, bulkOut)
             }
         }
-        return null
+        return transports
     }
 
     private fun Intent.usbDeviceOrNull(): UsbDevice? {
