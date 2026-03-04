@@ -274,13 +274,28 @@ class UsbCcidCardManager(
 
             var bulkIn: UsbEndpoint? = null
             var bulkOut: UsbEndpoint? = null
+            var interruptIn = false
             for (epIndex in 0 until usbInterface.endpointCount) {
                 val endpoint = usbInterface.getEndpoint(epIndex)
-                if (endpoint.type != UsbConstants.USB_ENDPOINT_XFER_BULK) continue
-                when (endpoint.direction) {
-                    UsbConstants.USB_DIR_IN -> if (bulkIn == null) bulkIn = endpoint
-                    UsbConstants.USB_DIR_OUT -> if (bulkOut == null) bulkOut = endpoint
+                when (endpoint.type) {
+                    UsbConstants.USB_ENDPOINT_XFER_BULK -> {
+                        when (endpoint.direction) {
+                            UsbConstants.USB_DIR_IN -> if (bulkIn == null) bulkIn = endpoint
+                            UsbConstants.USB_DIR_OUT -> if (bulkOut == null) bulkOut = endpoint
+                        }
+                    }
+
+                    UsbConstants.USB_ENDPOINT_XFER_INT -> {
+                        if (endpoint.direction == UsbConstants.USB_DIR_IN) {
+                            interruptIn = true
+                        }
+                    }
                 }
+            }
+            // On some ACS devices class may not be 0x0B. In that case we require an interrupt IN EP
+            // to avoid selecting unrelated vendor interfaces.
+            if (!looksLikeCcid && !interruptIn) {
+                continue
             }
             if (bulkIn != null && bulkOut != null) {
                 transports += CcidTransport(
@@ -288,12 +303,14 @@ class UsbCcidCardManager(
                     bulkIn = bulkIn,
                     bulkOut = bulkOut,
                     interfaceIndex = index,
-                    isCcidClass = looksLikeCcid
+                    isCcidClass = looksLikeCcid,
+                    hasInterruptIn = interruptIn
                 )
             }
         }
         return transports.sortedWith(
             compareByDescending<CcidTransport> { it.isCcidClass }
+                .thenByDescending { it.hasInterruptIn }
                 .thenBy { it.interfaceIndex }
         )
     }
@@ -312,7 +329,8 @@ class UsbCcidCardManager(
         val bulkIn: UsbEndpoint,
         val bulkOut: UsbEndpoint,
         val interfaceIndex: Int,
-        val isCcidClass: Boolean
+        val isCcidClass: Boolean,
+        val hasInterruptIn: Boolean
     )
 
     private companion object {

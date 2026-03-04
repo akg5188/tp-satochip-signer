@@ -95,9 +95,18 @@ class UsbCcidCardChannel(
     private fun powerOn() {
         val commandSeq = sendCommand(messageType = CCID_PC_TO_RDR_ICC_POWER_ON, payload = ByteArray(0))
         val response = readResponse(expectedSeq = commandSeq)
+        if (response.messageType != CCID_RDR_TO_PC_DATA_BLOCK) {
+            throw IOException("PowerOn 响应类型异常: 0x${response.messageType.toString(16)}")
+        }
         val (cmdStatus, iccStatus) = decodeStatuses(response.status)
+        if (response.error != 0) {
+            throw IOException("PowerOn 错误: bError=0x${response.error.toString(16)}")
+        }
         if (cmdStatus != CCID_CMD_STATUS_PROCESSED || iccStatus == CCID_ICC_STATUS_NOT_PRESENT) {
             throw IOException("读卡器已连接，但未检测到卡片")
+        }
+        if (!looksLikeAtr(response.payload)) {
+            throw IOException("PowerOn ATR 无效，可能不是正确的 CCID 接口")
         }
     }
 
@@ -356,6 +365,12 @@ class UsbCcidCardChannel(
         val cmdStatus = (status ushr 6) and 0x03
         val iccStatus = status and 0x03
         return cmdStatus to iccStatus
+    }
+
+    private fun looksLikeAtr(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return false
+        val ts = payload[0].toInt() and 0xFF
+        return ts == 0x3B || ts == 0x3F
     }
 
     private fun writeLe32(buffer: ByteArray, offset: Int, value: Int) {

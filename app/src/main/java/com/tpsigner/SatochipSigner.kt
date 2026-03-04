@@ -5,6 +5,8 @@ import java.nio.charset.StandardCharsets
 import org.satochip.client.SatochipCommandSet
 import org.satochip.client.SatochipParser
 import org.satochip.globalplatform.Crypto
+import org.satochip.io.APDUCommand
+import org.satochip.io.APDUResponse
 import org.satochip.io.CardChannel
 import org.web3j.crypto.StructuredDataEncoder
 
@@ -28,11 +30,19 @@ class SatochipSigner {
         pin: String
     ): UnlockOutcome {
         runCatching { Crypto.addBouncyCastleProvider() }
+        ensureSatochipAppletSelected(channel)
         val commandSet = SatochipCommandSet(channel)
-        commandSet.cardSelect("satochip").checkOK()
-        commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
+        runCatching {
+            commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
+        }.getOrElse { error ->
+            throw IllegalStateException("PIN 验证失败: ${error.message}", error)
+        }
 
-        val keyData = commandSet.cardBip32GetExtendedKey(derivationPath, null, null)
+        val keyData = runCatching {
+            commandSet.cardBip32GetExtendedKey(derivationPath, null, null)
+        }.getOrElse { error ->
+            throw IllegalStateException("BIP32 派生失败: ${error.message}", error)
+        }
         val pubkey = keyData[0]
         return UnlockOutcome(address = ethereumAddressFromPubkey(pubkey))
     }
@@ -45,11 +55,19 @@ class SatochipSigner {
     ): SigningOutcome {
         runCatching { Crypto.addBouncyCastleProvider() }
 
+        ensureSatochipAppletSelected(channel)
         val commandSet = SatochipCommandSet(channel)
-        commandSet.cardSelect("satochip").checkOK()
-        commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
+        runCatching {
+            commandSet.cardVerifyPIN(pin.toByteArray(StandardCharsets.UTF_8))
+        }.getOrElse { error ->
+            throw IllegalStateException("PIN 验证失败: ${error.message}", error)
+        }
 
-        val keyData = commandSet.cardBip32GetExtendedKey(derivationPath, null, null)
+        val keyData = runCatching {
+            commandSet.cardBip32GetExtendedKey(derivationPath, null, null)
+        }.getOrElse { error ->
+            throw IllegalStateException("BIP32 派生失败: ${error.message}", error)
+        }
         val pubkey = keyData[0]
         val signerAddress = ethereumAddressFromPubkey(pubkey)
 
@@ -224,6 +242,42 @@ class SatochipSigner {
 
         throw IllegalStateException("无法恢复 recovery id")
     }
+
+    private fun ensureSatochipAppletSelected(channel: CardChannel) {
+        val baseAid = hexToBytes("5361746f43686970")
+        val instanceAid = baseAid + byteArrayOf(0x00)
+        val attempts = mutableListOf<String>()
+
+        val variants = listOf(
+            SelectVariant(baseAid, needsLe = false),
+            SelectVariant(baseAid, needsLe = true),
+            SelectVariant(instanceAid, needsLe = false),
+            SelectVariant(instanceAid, needsLe = true)
+        )
+
+        for (variant in variants) {
+            val cmd = APDUCommand(0x00, 0xA4, 0x04, 0x00, variant.aid, variant.needsLe)
+            val resp: APDUResponse = try {
+                channel.send(cmd)
+            } catch (error: Throwable) {
+                attempts += "aid=${bytesToHex(variant.aid)} le=${if (variant.needsLe) 1 else 0} ioErr=${error.message}"
+                continue
+            }
+
+            val sw = resp.sw
+            attempts += "aid=${bytesToHex(variant.aid)} le=${if (variant.needsLe) 1 else 0} sw=0x${"%04X".format(sw)} rapdu=${resp.toHexString()}"
+            if (sw == APDUResponse.SW_OK) {
+                return
+            }
+        }
+
+        throw IllegalStateException("选择 Satochip Applet 失败: ${attempts.joinToString(" | ")}")
+    }
+
+    private data class SelectVariant(
+        val aid: ByteArray,
+        val needsLe: Boolean
+    )
 }
 
 private data class SignatureParts(
