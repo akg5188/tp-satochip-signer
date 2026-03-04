@@ -93,8 +93,8 @@ class UsbCcidCardChannel(
     }
 
     private fun powerOn() {
-        sendCommand(messageType = CCID_PC_TO_RDR_ICC_POWER_ON, payload = ByteArray(0))
-        val response = readResponse()
+        val commandSeq = sendCommand(messageType = CCID_PC_TO_RDR_ICC_POWER_ON, payload = ByteArray(0))
+        val response = readResponse(expectedSeq = commandSeq)
         val (cmdStatus, iccStatus) = decodeStatuses(response.status)
         if (cmdStatus != CCID_CMD_STATUS_PROCESSED || iccStatus == CCID_ICC_STATUS_NOT_PRESENT) {
             throw IOException("读卡器已连接，但未检测到卡片")
@@ -103,14 +103,14 @@ class UsbCcidCardChannel(
 
     private fun powerOff() {
         if (closed) return
-        sendCommand(messageType = CCID_PC_TO_RDR_ICC_POWER_OFF, payload = ByteArray(0))
-        runCatching { readResponse() }
+        val commandSeq = sendCommand(messageType = CCID_PC_TO_RDR_ICC_POWER_OFF, payload = ByteArray(0))
+        runCatching { readResponse(expectedSeq = commandSeq) }
     }
 
     private fun queryCardPresent(): Boolean {
-        sendCommand(messageType = CCID_PC_TO_RDR_GET_SLOT_STATUS, payload = ByteArray(0))
+        val commandSeq = sendCommand(messageType = CCID_PC_TO_RDR_GET_SLOT_STATUS, payload = ByteArray(0))
         while (true) {
-            val response = readResponse()
+            val response = readResponse(expectedSeq = commandSeq)
             if (response.messageType != CCID_RDR_TO_PC_SLOT_STATUS &&
                 response.messageType != CCID_RDR_TO_PC_DATA_BLOCK
             ) {
@@ -131,7 +131,7 @@ class UsbCcidCardChannel(
     }
 
     private fun transceiveApdu(apdu: ByteArray): ByteArray {
-        sendCommand(
+        val commandSeq = sendCommand(
             messageType = CCID_PC_TO_RDR_XFR_BLOCK,
             payload = apdu,
             parameter0 = 0x00, // bBWI
@@ -141,7 +141,7 @@ class UsbCcidCardChannel(
 
         val responsePayload = ByteArrayOutputStream()
         while (true) {
-            val response = readResponse()
+            val response = readResponse(expectedSeq = commandSeq)
             when (response.messageType) {
                 CCID_RDR_TO_PC_DATA_BLOCK -> {
                     val (cmdStatus, iccStatus) = decodeStatuses(response.status)
@@ -223,12 +223,13 @@ class UsbCcidCardChannel(
         parameter0: Int = 0x00,
         parameter1: Int = 0x00,
         parameter2: Int = 0x00
-    ) {
+    ): Int {
         val request = ByteArray(10 + payload.size)
+        val commandSeq = nextSeq()
         request[0] = messageType.toByte()
         writeLe32(request, 1, payload.size)
         request[5] = 0x00 // slot
-        request[6] = nextSeq().toByte()
+        request[6] = commandSeq.toByte()
         request[7] = parameter0.toByte()
         request[8] = parameter1.toByte()
         request[9] = parameter2.toByte()
@@ -240,45 +241,55 @@ class UsbCcidCardChannel(
         if (written != request.size) {
             throw IOException("USB 写入失败: expected=${request.size}, actual=$written")
         }
+        return commandSeq
     }
 
-    private fun readResponse(): CcidMessage {
-        val raw = readRawMessage()
-        if (raw.size < 10) {
-            throw IOException("CCID 响应头长度不足: ${raw.size}")
-        }
+    private fun readResponse(expectedSeq: Int? = null): CcidMessage {
+        var skippedMismatchedSeq = 0
+        while (true) {
+            val raw = readRawMessage()
+            if (raw.size < 10) {
+                throw IOException("CCID 响应头长度不足: ${raw.size}")
+            }
 
-        val messageType = raw[0].toInt() and 0xFF
-        val payloadLength = readLe32(raw, 1)
-        val expected = 10 + payloadLength
-        if (raw.size < expected) {
-            throw IOException("CCID 响应长度异常: expected=$expected, actual=${raw.size}")
-        }
+            val messageType = raw[0].toInt() and 0xFF
+            val payloadLength = readLe32(raw, 1)
+            val expected = 10 + payloadLength
+            if (raw.size < expected) {
+                throw IOException("CCID 响应长度异常: expected=$expected, actual=${raw.size}")
+            }
 
-        val payload = if (payloadLength > 0) {
-            raw.copyOfRange(10, 10 + payloadLength)
-        } else {
-            ByteArray(0)
-        }
+            val responseSeq = raw[6].toInt() and 0xFF
+            if (expectedSeq != null && responseSeq != expectedSeq) {
+                skippedMismatchedSeq += 1
+                if (skippedMismatchedSeq > MAX_SEQ_MISMATCH_SKIP) {
+                    throw IOException("CCID 序号不同步: expect=$expectedSeq, last=$responseSeq")
+                }
+                continue
+            }
 
-        return CcidMessage(
-            messageType = messageType,
-            status = raw[7].toInt() and 0xFF,
-            error = raw[8].toInt() and 0xFF,
-            chain = raw[9].toInt() and 0xFF,
-            payload = payload
-        )
+            val payload = if (payloadLength > 0) {
+                raw.copyOfRange(10, 10 + payloadLength)
+            } else {
+                ByteArray(0)
+            }
+
+            return CcidMessage(
+                messageType = messageType,
+                sequence = responseSeq,
+                status = raw[7].toInt() and 0xFF,
+                error = raw[8].toInt() and 0xFF,
+                chain = raw[9].toInt() and 0xFF,
+                payload = payload
+            )
+        }
     }
 
     private fun readRawMessage(): ByteArray {
         while (true) {
-            if (pendingReadBuffer.size >= 10) {
-                val expectedLength = 10 + readLe32(pendingReadBuffer, 1)
-                if (pendingReadBuffer.size >= expectedLength) {
-                    val message = pendingReadBuffer.copyOfRange(0, expectedLength)
-                    pendingReadBuffer = pendingReadBuffer.copyOfRange(expectedLength, pendingReadBuffer.size)
-                    return message
-                }
+            val pending = extractMessageFromPendingBuffer()
+            if (pending != null) {
+                return pending
             }
 
             val chunk = ByteArray(maxOf(512, bulkIn.maxPacketSize.coerceAtLeast(64)))
@@ -287,6 +298,42 @@ class UsbCcidCardChannel(
                 throw IOException("USB 读取超时或失败: $read")
             }
             pendingReadBuffer = appendBytes(pendingReadBuffer, chunk.copyOf(read))
+        }
+    }
+
+    private fun extractMessageFromPendingBuffer(): ByteArray? {
+        while (pendingReadBuffer.size >= 10) {
+            val messageType = pendingReadBuffer[0].toInt() and 0xFF
+            val payloadLength = readLe32(pendingReadBuffer, 1)
+            val validHeader =
+                isKnownResponseType(messageType) && payloadLength in 0..MAX_CCID_PAYLOAD_LENGTH
+            if (!validHeader) {
+                // Re-sync stream when parser offset drifts.
+                pendingReadBuffer = pendingReadBuffer.copyOfRange(1, pendingReadBuffer.size)
+                continue
+            }
+
+            val expectedLength = 10 + payloadLength
+            if (pendingReadBuffer.size < expectedLength) {
+                return null
+            }
+            val message = pendingReadBuffer.copyOfRange(0, expectedLength)
+            pendingReadBuffer = pendingReadBuffer.copyOfRange(expectedLength, pendingReadBuffer.size)
+            return message
+        }
+        return null
+    }
+
+    private fun isKnownResponseType(messageType: Int): Boolean {
+        return when (messageType) {
+            CCID_RDR_TO_PC_DATA_BLOCK,
+            CCID_RDR_TO_PC_SLOT_STATUS,
+            CCID_RDR_TO_PC_PARAMETERS,
+            CCID_RDR_TO_PC_ESCAPE,
+            CCID_RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQUENCY,
+            CCID_RDR_TO_PC_NOTIFY_SLOT_CHANGE,
+            CCID_RDR_TO_PC_HARDWARE_ERROR -> true
+            else -> false
         }
     }
 
@@ -327,6 +374,7 @@ class UsbCcidCardChannel(
 
     private data class CcidMessage(
         val messageType: Int,
+        val sequence: Int,
         val status: Int,
         val error: Int,
         val chain: Int,
@@ -345,10 +393,17 @@ class UsbCcidCardChannel(
 
         const val CCID_RDR_TO_PC_DATA_BLOCK = 0x80
         const val CCID_RDR_TO_PC_SLOT_STATUS = 0x81
+        const val CCID_RDR_TO_PC_PARAMETERS = 0x82
+        const val CCID_RDR_TO_PC_ESCAPE = 0x83
+        const val CCID_RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQUENCY = 0x84
+        const val CCID_RDR_TO_PC_NOTIFY_SLOT_CHANGE = 0x50
+        const val CCID_RDR_TO_PC_HARDWARE_ERROR = 0x51
 
         const val CCID_CMD_STATUS_PROCESSED = 0
         const val CCID_CMD_STATUS_TIME_EXTENSION = 2
 
         const val CCID_ICC_STATUS_NOT_PRESENT = 2
+        const val MAX_CCID_PAYLOAD_LENGTH = 65_536
+        const val MAX_SEQ_MISMATCH_SKIP = 12
     }
 }

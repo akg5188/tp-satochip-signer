@@ -109,7 +109,7 @@ class UsbCcidCardManager(
 
     fun withConnectedChannel(action: (CardChannel) -> Unit): Boolean {
         val current = channel ?: return false
-        if (!current.isConnected() || !current.isCardPresent()) {
+        if (!current.isConnected()) {
             disconnectCurrent(notify = true)
             return false
         }
@@ -139,7 +139,7 @@ class UsbCcidCardManager(
         if (current != null) {
             val id = connectedDeviceId
             val deviceStillPresent = id != null && isDeviceStillPresent(id)
-            if (!deviceStillPresent || !current.isConnected() || !current.isCardPresent()) {
+            if (!deviceStillPresent || !current.isConnected()) {
                 disconnectCurrent(notify = true)
             }
             return
@@ -283,10 +283,19 @@ class UsbCcidCardManager(
                 }
             }
             if (bulkIn != null && bulkOut != null) {
-                transports += CcidTransport(usbInterface, bulkIn, bulkOut)
+                transports += CcidTransport(
+                    ccidInterface = usbInterface,
+                    bulkIn = bulkIn,
+                    bulkOut = bulkOut,
+                    interfaceIndex = index,
+                    isCcidClass = looksLikeCcid
+                )
             }
         }
-        return transports
+        return transports.sortedWith(
+            compareByDescending<CcidTransport> { it.isCcidClass }
+                .thenBy { it.interfaceIndex }
+        )
     }
 
     private fun Intent.usbDeviceOrNull(): UsbDevice? {
@@ -301,7 +310,9 @@ class UsbCcidCardManager(
     private data class CcidTransport(
         val ccidInterface: UsbInterface,
         val bulkIn: UsbEndpoint,
-        val bulkOut: UsbEndpoint
+        val bulkOut: UsbEndpoint,
+        val interfaceIndex: Int,
+        val isCcidClass: Boolean
     )
 
     private companion object {
