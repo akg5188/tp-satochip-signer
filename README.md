@@ -9,14 +9,14 @@
 - 支持解析 TP `ethereum:signTypeData` / `signTypeDataV4`（兼容 `signTypedData` / `signTypedDataV4`）
 - 支持 TP `tp:multiFragment` 动态分片拼接
 - 支持多分片二维码连续扫码（遇到分片会自动继续扫码直到拼接完成）
-- 通过 NFC 连接 Satochip 卡并调用 `cardSignTransactionHash`
+- 支持 `NFC` 或 `USB-OTG` 读卡器（CCID，已适配 ACR39U）连接 Satochip 卡并调用 `cardSignTransactionHash`
 - 本地完成 EVM 交易编码（Legacy + EIP-1559，含 Arbitrum One / chainId 42161）与 EIP-191 / EIP-712 哈希
 - 生成对应 `...Signature` 回传字符串和二维码
 - 不申请 `INTERNET` 权限，按离线扫码冷签场景设计
 
 ## 项目结构
 
-- `app/`: Android 应用（仅扫码 + NFC 签名）
+- `app/`: Android 应用（扫码 + NFC/USB 签名）
 - `satochip-lib/`: 从 Toporin `Satochip-Java` 复制并改造的本地库模块
 - `card-applet/SatochipApplet/`: Satochip JavaCard CAP 编译源码（来源于 Toporin `SatochipApplet`）
 - `card-applet/CAP_BUILD_AND_INSTALL.zh-CN.md`: CAP 编译、安装、验证步骤（中文）
@@ -49,11 +49,14 @@ adb uninstall com.smartcard.signer
 ## 使用流程（Android）
 
 1. 输入卡 PIN 与 BIP32 路径（默认 `m/44'/60'/0'/0/0`）。
-2. 点击“解锁显示地址”，将智能卡贴到手机 NFC 区域。
-3. 解锁成功后点击“扫码”读取 TP 签名请求（扫码为竖屏）。
-4. 先核对“转账/合约信息”和“DApp 信息”，点击“已核对，允许签名”。
-5. 点击“贴卡签名”，再次贴卡完成签名。
-6. TP 扫描本应用展示的回传二维码完成广播。
+2. 点击“解锁显示地址”。
+3. 连卡方式二选一：
+   - 有 NFC：将智能卡贴到手机 NFC 区域。
+   - 无 NFC：通过 OTG 连接 ACR39U 并插卡（应用会自动检测 USB 读卡器）。
+4. 解锁成功后点击“扫码”读取 TP 签名请求（扫码为竖屏）。
+5. 先核对“转账/合约信息”和“DApp 信息”，点击“已核对，允许签名”。
+6. 点击“贴卡/插卡签名”完成签名（NFC 贴卡或 USB 插卡均可）。
+7. TP 扫描本应用展示的回传二维码完成广播。
 
 ## 启动与排错
 

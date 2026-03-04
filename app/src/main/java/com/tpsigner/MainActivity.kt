@@ -48,8 +48,9 @@ import org.satochip.io.CardListener
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
-    private lateinit var cardManager: NfcCardManager
-    private var cardManagerStarted = false
+    private lateinit var nfcCardManager: NfcCardManager
+    private var nfcCardManagerStarted = false
+    private lateinit var usbCardManager: UsbCcidCardManager
     private var nfcAdapter: NfcAdapter? = null
 
     private val qrLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -75,21 +76,29 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        cardManager = NfcCardManager().apply {
-            setCardListener(object : CardListener {
-                override fun onConnected(channel: CardChannel) {
-                    viewModel.onCardConnected(channel)
-                }
+        val sharedListener = object : CardListener {
+            override fun onConnected(channel: CardChannel) {
+                viewModel.onCardConnected(channel)
+            }
 
-                override fun onDisconnected() {
-                    // No-op
-                }
-            })
+            override fun onDisconnected() {
+                // No-op
+            }
+        }
+
+        nfcCardManager = NfcCardManager().apply {
+            setCardListener(sharedListener)
+        }
+        usbCardManager = UsbCcidCardManager(
+            context = applicationContext,
+            onError = viewModel::onRuntimeError
+        ).apply {
+            setCardListener(sharedListener)
         }
 
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
         if (nfcAdapter == null) {
-            viewModel.onRuntimeError("设备未检测到 NFC，无法读取智能卡")
+            viewModel.onRuntimeError("设备未检测到 NFC，可改用 USB-OTG 读卡器（如 ACR39U）")
         }
 
         setContent {
@@ -106,7 +115,7 @@ class MainActivity : ComponentActivity() {
                         onScan = ::startScan,
                         onConfirmReview = viewModel::confirmReview,
                         onArmUnlock = ::armUnlock,
-                        onArmSign = viewModel::armSigning,
+                        onArmSign = ::armSign,
                         onCancel = viewModel::cancelPendingAction
                     )
                 }
@@ -116,23 +125,31 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (!cardManagerStarted) {
+        if (!nfcCardManagerStarted) {
             runCatching {
-                cardManager.start()
-                cardManagerStarted = true
+                nfcCardManager.start()
+                nfcCardManagerStarted = true
             }.onFailure { error ->
                 viewModel.onRuntimeError("启动读卡线程失败: ${error.message ?: error.javaClass.simpleName}")
             }
         }
+        if (nfcAdapter != null) {
+            runCatching {
+                nfcAdapter?.enableReaderMode(
+                    this,
+                    nfcCardManager,
+                    NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
+                    null
+                )
+            }.onFailure { error ->
+                viewModel.onRuntimeError("启用 NFC 失败，请确认手机已打开 NFC: ${error.message ?: error.javaClass.simpleName}")
+            }
+        }
         runCatching {
-            nfcAdapter?.enableReaderMode(
-                this,
-                cardManager,
-                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
-                null
-            )
+            usbCardManager.startManager()
+            usbCardManager.probeNow(forceOpenAttempt = true)
         }.onFailure { error ->
-            viewModel.onRuntimeError("启用 NFC 失败，请确认手机已打开 NFC: ${error.message ?: error.javaClass.simpleName}")
+            viewModel.onRuntimeError("启动 USB 读卡器失败: ${error.message ?: error.javaClass.simpleName}")
         }
     }
 
@@ -142,8 +159,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (this::cardManager.isInitialized && cardManagerStarted) {
-            cardManager.interrupt()
+        if (this::nfcCardManager.isInitialized && nfcCardManagerStarted) {
+            nfcCardManager.interrupt()
+        }
+        if (this::usbCardManager.isInitialized) {
+            usbCardManager.stopManager()
         }
         super.onDestroy()
     }
@@ -155,8 +175,27 @@ class MainActivity : ComponentActivity() {
 
     private fun armUnlock() {
         viewModel.armUnlock()
-        if (this::cardManager.isInitialized) {
-            cardManager.withConnectedChannel { channel ->
+        if (this::nfcCardManager.isInitialized) {
+            nfcCardManager.withConnectedChannel { channel ->
+                viewModel.onCardConnected(channel)
+            }
+        }
+        if (this::usbCardManager.isInitialized) {
+            usbCardManager.withConnectedChannel { channel ->
+                viewModel.onCardConnected(channel)
+            }
+        }
+    }
+
+    private fun armSign() {
+        viewModel.armSigning()
+        if (this::nfcCardManager.isInitialized) {
+            nfcCardManager.withConnectedChannel { channel ->
+                viewModel.onCardConnected(channel)
+            }
+        }
+        if (this::usbCardManager.isInitialized) {
+            usbCardManager.withConnectedChannel { channel ->
                 viewModel.onCardConnected(channel)
             }
         }
@@ -188,6 +227,7 @@ private fun SignerScreen(
     ) {
         Text("智能卡", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("离线冷签：应用不申请 INTERNET 权限", color = Color(0xFF0F5132))
+        Text("支持 NFC 贴卡 或 USB-OTG 读卡器（ACR39U）签名", color = Color(0xFF4A5568))
         Text("助记词导入请在离线 Tails 电脑完成，手机仅做扫码签名", color = Color(0xFF4A5568))
 
         OutlinedTextField(
@@ -240,7 +280,7 @@ private fun SignerScreen(
                 enabled = state.isUnlocked && (!state.reviewRequired || state.reviewConfirmed),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E8C5C))
             ) {
-                Text("贴卡签名")
+                Text("贴卡/插卡签名")
             }
         }
 
