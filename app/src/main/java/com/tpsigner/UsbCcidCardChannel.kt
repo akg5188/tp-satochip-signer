@@ -60,18 +60,26 @@ class UsbCcidCardChannel(
         val response = synchronized(ioLock) {
             ensureOpen()
             val apdu = cmd.serialize()
-            runCatching { transceiveApdu(apdu) }.recoverCatching { error ->
-                // Some ACR39U units intermittently return mute/slot errors on first exchange.
-                // Retry once after a power cycle.
-                if (isRecoverableExchangeError(error)) {
-                    recoverCardSession()
-                    transceiveApdu(apdu)
-                } else {
-                    throw error
-                }
-            }.getOrThrow()
+            executeWithRecovery(apdu)
         }
         return APDUResponse(response)
+    }
+
+    private fun executeWithRecovery(apdu: ByteArray): ByteArray {
+        var lastError: Throwable? = null
+        repeat(3) { attempt ->
+            val result = runCatching { transceiveApdu(apdu) }
+            if (result.isSuccess) {
+                return result.getOrThrow()
+            }
+            val error = result.exceptionOrNull() ?: return@repeat
+            lastError = error
+            if (attempt >= 2 || !isRecoverableExchangeError(error)) {
+                return@repeat
+            }
+            recoverCardSession()
+        }
+        throw lastError ?: IOException("USB APDU 发送失败")
     }
 
     override fun isConnected(): Boolean {
@@ -112,6 +120,9 @@ class UsbCcidCardChannel(
             if (cmdStatus == CCID_CMD_STATUS_TIME_EXTENSION) {
                 continue
             }
+            if (response.error != 0) {
+                return false
+            }
             if (cmdStatus != CCID_CMD_STATUS_PROCESSED) {
                 return false
             }
@@ -137,6 +148,11 @@ class UsbCcidCardChannel(
                     if (cmdStatus == CCID_CMD_STATUS_TIME_EXTENSION) {
                         continue
                     }
+                    if (response.error != 0) {
+                        throw IOException(
+                            "CCID reader error in data block: status=0x${response.status.toString(16)} bError=0x${response.error.toString(16)}"
+                        )
+                    }
                     if (cmdStatus != CCID_CMD_STATUS_PROCESSED) {
                         throw IOException(
                             "CCID APDU 执行失败: status=0x${response.status.toString(16)} error=0x${response.error.toString(16)}"
@@ -161,6 +177,11 @@ class UsbCcidCardChannel(
                     if (cmdStatus == CCID_CMD_STATUS_TIME_EXTENSION) {
                         continue
                     }
+                    if (response.error != 0) {
+                        throw IOException(
+                            "CCID slot status error: status=0x${response.status.toString(16)} bError=0x${response.error.toString(16)}"
+                        )
+                    }
                     if (cmdStatus != CCID_CMD_STATUS_PROCESSED) {
                         throw IOException(
                             "CCID SlotStatus 失败: status=0x${response.status.toString(16)} error=0x${response.error.toString(16)}"
@@ -183,6 +204,9 @@ class UsbCcidCardChannel(
         val message = error.message?.lowercase() ?: return false
         return message.contains("status=0x40") ||
             message.contains("error=0xfe") ||
+            message.contains("berror=0x82") ||
+            message.contains("berror=0xfe") ||
+            message.contains("berror=0xfb") ||
             message.contains("apdu response must be at least 2 bytes") ||
             message.contains("usb 读取超时")
     }
