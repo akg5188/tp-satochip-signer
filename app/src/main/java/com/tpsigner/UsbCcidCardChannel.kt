@@ -46,6 +46,20 @@ class UsbCcidCardChannel(
         }
     }
 
+    fun probeApduHealth(): Boolean {
+        return synchronized(ioLock) {
+            if (closed) return@synchronized false
+            runCatching {
+                // SELECT (empty DF name): response may be error SW, but SW1 must still be valid ISO class.
+                val probeApdu = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00, 0x00)
+                val response = executeWithRecovery(probeApdu)
+                if (response.size < 2) return@runCatching false
+                val sw1 = response[response.size - 2].toInt() and 0xFF
+                isPlausibleSw1(sw1)
+            }.getOrDefault(false)
+        }
+    }
+
     fun close() {
         synchronized(ioLock) {
             if (closed) return
@@ -176,7 +190,14 @@ class UsbCcidCardChannel(
 
                     // Some readers may chain a long R-APDU across multiple CCID blocks.
                     if (!response.hasMoreData()) {
-                        return responsePayload.toByteArray()
+                        val rapdu = responsePayload.toByteArray()
+                        if (rapdu.size >= 2) {
+                            val sw1 = rapdu[rapdu.size - 2].toInt() and 0xFF
+                            if (!isPlausibleSw1(sw1)) {
+                                throw IOException("APDU SW1 非法: sw1=0x${sw1.toString(16)} rapdu=${rapdu.toHexStringCompact()}")
+                            }
+                        }
+                        return rapdu
                     }
                     continue
                 }
@@ -216,6 +237,7 @@ class UsbCcidCardChannel(
             message.contains("berror=0x82") ||
             message.contains("berror=0xfe") ||
             message.contains("berror=0xfb") ||
+            message.contains("apdu sw1 非法") ||
             message.contains("apdu response must be at least 2 bytes") ||
             message.contains("usb 读取超时")
     }
@@ -371,6 +393,20 @@ class UsbCcidCardChannel(
         if (payload.isEmpty()) return false
         val ts = payload[0].toInt() and 0xFF
         return ts == 0x3B || ts == 0x3F
+    }
+
+    private fun isPlausibleSw1(sw1: Int): Boolean {
+        // ISO7816 status classes typically use 0x61-0x6F or 0x90-0x9F.
+        return (sw1 in 0x61..0x6F) || (sw1 in 0x90..0x9F)
+    }
+
+    private fun ByteArray.toHexStringCompact(): String {
+        if (this.isEmpty()) return ""
+        val out = StringBuilder(this.size * 2)
+        for (b in this) {
+            out.append(String.format("%02x", b))
+        }
+        return out.toString()
     }
 
     private fun writeLe32(buffer: ByteArray, offset: Int, value: Int) {

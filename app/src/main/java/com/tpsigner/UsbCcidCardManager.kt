@@ -176,8 +176,14 @@ class UsbCcidCardManager(
                     bulkOut = transport.bulkOut
                 )
             } catch (error: Throwable) {
-                openErrors += "if#${transport.ccidInterface.id}: ${error.message ?: error.javaClass.simpleName}"
+                openErrors += "if#${transport.ccidInterface.id} in=${transport.bulkIn.addressHex()} out=${transport.bulkOut.addressHex()}: ${error.message ?: error.javaClass.simpleName}"
                 runCatching { connection.close() }
+                continue
+            }
+
+            if (!newChannel.probeApduHealth()) {
+                openErrors += "if#${transport.ccidInterface.id} in=${transport.bulkIn.addressHex()} out=${transport.bulkOut.addressHex()}: APDU 探测失败（疑似非 ISO7816 通道）"
+                runCatching { newChannel.close() }
                 continue
             }
 
@@ -221,6 +227,10 @@ class UsbCcidCardManager(
         }.onFailure { error ->
             onError("申请 USB 权限失败: ${error.message ?: error.javaClass.simpleName}")
         }
+    }
+
+    private fun UsbEndpoint.addressHex(): String {
+        return "0x%02x".format(address and 0xFF)
     }
 
     private fun registerReceiverIfNeeded() {
