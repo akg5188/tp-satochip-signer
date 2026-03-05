@@ -19,6 +19,7 @@ class UsbCcidCardChannel(
     private val ccidInterface: UsbInterface,
     private val bulkIn: UsbEndpoint,
     private val bulkOut: UsbEndpoint,
+    private val slot: Int = 0,
     private val timeoutMs: Int = 120_000
 ) : CardChannel {
     @Volatile
@@ -27,6 +28,10 @@ class UsbCcidCardChannel(
     private var seq: Int = 0
     private val ioLock = Any()
     private var pendingReadBuffer: ByteArray = ByteArray(0)
+    private var atr: ByteArray = ByteArray(0)
+    private var preferT1Tpdu: Boolean = false
+    private var t1HostNs: Int = 0
+    private var t1ExpectedCardNs: Int = 0
 
     init {
         if (!connection.claimInterface(ccidInterface, true)) {
@@ -37,6 +42,14 @@ class UsbCcidCardChannel(
 
     fun belongsTo(deviceId: Int): Boolean {
         return device.deviceId == deviceId
+    }
+
+    fun getSlot(): Int {
+        return slot and 0xFF
+    }
+
+    fun getAtrHex(): String {
+        return atr.toHexStringCompact()
     }
 
     fun isCardPresent(): Boolean {
@@ -50,8 +63,22 @@ class UsbCcidCardChannel(
         return synchronized(ioLock) {
             if (closed) return@synchronized false
             runCatching {
-                // SELECT (empty DF name): response may be error SW, but SW1 must still be valid ISO class.
-                val probeApdu = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00, 0x00)
+                // SELECT Satochip AID should at least return a plausible ISO SW class.
+                val probeApdu = byteArrayOf(
+                    0x00,
+                    0xA4.toByte(),
+                    0x04,
+                    0x00,
+                    0x08,
+                    0x53,
+                    0x61,
+                    0x74,
+                    0x6f,
+                    0x43,
+                    0x68,
+                    0x69,
+                    0x70
+                )
                 val response = executeWithRecovery(probeApdu)
                 if (response.size < 2) return@runCatching false
                 val sw1 = response[response.size - 2].toInt() and 0xFF
@@ -122,6 +149,9 @@ class UsbCcidCardChannel(
         if (!looksLikeAtr(response.payload)) {
             throw IOException("PowerOn ATR 无效，可能不是正确的 CCID 接口")
         }
+        atr = response.payload.copyOf()
+        t1HostNs = 0
+        t1ExpectedCardNs = 0
     }
 
     private fun powerOff() {
@@ -154,9 +184,29 @@ class UsbCcidCardChannel(
     }
 
     private fun transceiveApdu(apdu: ByteArray): ByteArray {
+        if (preferT1Tpdu) {
+            return transceiveApduAsT1(apdu)
+        }
+
+        val rapdu = transceivePayload(apdu)
+        if (looksLikeT1Block(rapdu)) {
+            preferT1Tpdu = true
+            throw IOException("检测到 T=1 TPDU 通道，切换协议后重试")
+        }
+        if (rapdu.size < 2) {
+            throw IOException("APDU response must be at least 2 bytes")
+        }
+        val sw1 = rapdu[rapdu.size - 2].toInt() and 0xFF
+        if (!isPlausibleSw1(sw1)) {
+            throw IOException("APDU SW1 非法: sw1=0x${sw1.toString(16)} rapdu=${rapdu.toHexStringCompact()}")
+        }
+        return rapdu
+    }
+
+    private fun transceivePayload(payload: ByteArray): ByteArray {
         val commandSeq = sendCommand(
             messageType = CCID_PC_TO_RDR_XFR_BLOCK,
-            payload = apdu,
+            payload = payload,
             parameter0 = 0x00, // bBWI
             parameter1 = 0x00, // wLevelParameter low
             parameter2 = 0x00  // wLevelParameter high
@@ -188,16 +238,9 @@ class UsbCcidCardChannel(
                         responsePayload.write(response.payload)
                     }
 
-                    // Some readers may chain a long R-APDU across multiple CCID blocks.
+                    // Some readers may chain long data across multiple CCID blocks.
                     if (!response.hasMoreData()) {
-                        val rapdu = responsePayload.toByteArray()
-                        if (rapdu.size >= 2) {
-                            val sw1 = rapdu[rapdu.size - 2].toInt() and 0xFF
-                            if (!isPlausibleSw1(sw1)) {
-                                throw IOException("APDU SW1 非法: sw1=0x${sw1.toString(16)} rapdu=${rapdu.toHexStringCompact()}")
-                            }
-                        }
-                        return rapdu
+                        return responsePayload.toByteArray()
                     }
                     continue
                 }
@@ -230,6 +273,81 @@ class UsbCcidCardChannel(
         }
     }
 
+    private fun transceiveApduAsT1(apdu: ByteArray): ByteArray {
+        if (apdu.size > T1_MAX_INF_LEN) {
+            throw IOException("T=1 模式暂不支持超过 $T1_MAX_INF_LEN 字节 APDU")
+        }
+
+        val iBlock = buildT1Block(pcb = (t1HostNs shl 6), inf = apdu)
+        val responseData = ByteArrayOutputStream()
+        var current = transceivePayload(iBlock)
+        var commandAccepted = false
+        var steps = 0
+
+        while (steps < T1_MAX_EXCHANGE_STEPS) {
+            steps += 1
+            val block = parseT1Block(current)
+                ?: throw IOException("T=1 响应块无效: ${current.toHexStringCompact()}")
+
+            when {
+                block.isRBlock() -> {
+                    // Card asks for retransmission of the last I-Block.
+                    current = transceivePayload(iBlock)
+                }
+
+                block.isSBlock() -> {
+                    if (!block.isWtxRequest()) {
+                        throw IOException("不支持的 T=1 S-Block: pcb=0x${block.pcb.toString(16)}")
+                    }
+                    val wtxm = if (block.inf.isNotEmpty()) block.inf[0] else 0x01
+                    val sResponse = buildT1SBlockWtxResponse(wtxm)
+                    current = transceivePayload(sResponse)
+                }
+
+                block.isIBlock() -> {
+                    if (!commandAccepted) {
+                        commandAccepted = true
+                        t1HostNs = t1HostNs xor 1
+                    }
+
+                    val cardNs = block.ns()
+                    if (cardNs != t1ExpectedCardNs) {
+                        val nack = buildT1RBlock(nr = t1ExpectedCardNs)
+                        current = transceivePayload(nack)
+                        continue
+                    }
+
+                    if (block.inf.isNotEmpty()) {
+                        responseData.write(block.inf)
+                    }
+                    t1ExpectedCardNs = t1ExpectedCardNs xor 1
+
+                    if (block.more()) {
+                        val ack = buildT1RBlock(nr = t1ExpectedCardNs)
+                        current = transceivePayload(ack)
+                        continue
+                    }
+
+                    val rapdu = responseData.toByteArray()
+                    if (rapdu.size < 2) {
+                        throw IOException("APDU response must be at least 2 bytes")
+                    }
+                    val sw1 = rapdu[rapdu.size - 2].toInt() and 0xFF
+                    if (!isPlausibleSw1(sw1)) {
+                        throw IOException("APDU SW1 非法: sw1=0x${sw1.toString(16)} rapdu=${rapdu.toHexStringCompact()}")
+                    }
+                    return rapdu
+                }
+
+                else -> {
+                    throw IOException("不支持的 T=1 数据块: pcb=0x${block.pcb.toString(16)}")
+                }
+            }
+        }
+
+        throw IOException("T=1 交换超时")
+    }
+
     private fun isRecoverableExchangeError(error: Throwable): Boolean {
         val message = error.message?.lowercase() ?: return false
         return message.contains("status=0x40") ||
@@ -237,6 +355,7 @@ class UsbCcidCardChannel(
             message.contains("berror=0x82") ||
             message.contains("berror=0xfe") ||
             message.contains("berror=0xfb") ||
+            message.contains("t=1 tpdu") ||
             message.contains("apdu sw1 非法") ||
             message.contains("apdu response must be at least 2 bytes") ||
             message.contains("usb 读取超时")
@@ -259,7 +378,7 @@ class UsbCcidCardChannel(
         val commandSeq = nextSeq()
         request[0] = messageType.toByte()
         writeLe32(request, 1, payload.size)
-        request[5] = 0x00 // slot
+        request[5] = (slot and 0xFF).toByte()
         request[6] = commandSeq.toByte()
         request[7] = parameter0.toByte()
         request[8] = parameter1.toByte()
@@ -400,6 +519,55 @@ class UsbCcidCardChannel(
         return (sw1 in 0x61..0x6F) || (sw1 in 0x90..0x9F)
     }
 
+    private fun looksLikeT1Block(data: ByteArray): Boolean {
+        val block = parseT1Block(data) ?: return false
+        return block.isIBlock() || block.isRBlock() || block.isSBlock()
+    }
+
+    private fun parseT1Block(raw: ByteArray): T1Block? {
+        if (raw.size < 4) return null
+        val len = raw[2].toInt() and 0xFF
+        val expected = 4 + len
+        if (raw.size != expected) return null
+        var lrc = 0
+        for (i in raw.indices) {
+            lrc = lrc xor (raw[i].toInt() and 0xFF)
+        }
+        if (lrc != 0) return null
+        val inf = if (len > 0) raw.copyOfRange(3, 3 + len) else ByteArray(0)
+        return T1Block(
+            nad = raw[0].toInt() and 0xFF,
+            pcb = raw[1].toInt() and 0xFF,
+            inf = inf
+        )
+    }
+
+    private fun buildT1Block(pcb: Int, inf: ByteArray): ByteArray {
+        require(inf.size <= T1_MAX_INF_LEN) { "T=1 INF 太长: ${inf.size}" }
+        val out = ByteArray(4 + inf.size)
+        out[0] = 0x00 // NAD
+        out[1] = (pcb and 0xFF).toByte()
+        out[2] = (inf.size and 0xFF).toByte()
+        if (inf.isNotEmpty()) {
+            System.arraycopy(inf, 0, out, 3, inf.size)
+        }
+        var lrc = 0
+        for (i in 0 until (3 + inf.size)) {
+            lrc = lrc xor (out[i].toInt() and 0xFF)
+        }
+        out[3 + inf.size] = (lrc and 0xFF).toByte()
+        return out
+    }
+
+    private fun buildT1RBlock(nr: Int): ByteArray {
+        val pcb = 0x80 or ((nr and 0x01) shl 4)
+        return buildT1Block(pcb = pcb, inf = ByteArray(0))
+    }
+
+    private fun buildT1SBlockWtxResponse(wtxm: Byte): ByteArray {
+        return buildT1Block(pcb = 0xE3, inf = byteArrayOf(wtxm))
+    }
+
     private fun ByteArray.toHexStringCompact(): String {
         if (this.isEmpty()) return ""
         val out = StringBuilder(this.size * 2)
@@ -436,6 +604,19 @@ class UsbCcidCardChannel(
         }
     }
 
+    private data class T1Block(
+        val nad: Int,
+        val pcb: Int,
+        val inf: ByteArray
+    ) {
+        fun isIBlock(): Boolean = (pcb and 0x80) == 0x00
+        fun isRBlock(): Boolean = (pcb and 0xC0) == 0x80
+        fun isSBlock(): Boolean = (pcb and 0xC0) == 0xC0
+        fun more(): Boolean = isIBlock() && ((pcb and 0x20) != 0)
+        fun ns(): Int = (pcb ushr 6) and 0x01
+        fun isWtxRequest(): Boolean = isSBlock() && ((pcb and 0x20) == 0) && ((pcb and 0x1F) == 0x03)
+    }
+
     private companion object {
         const val CCID_PC_TO_RDR_ICC_POWER_ON = 0x62
         const val CCID_PC_TO_RDR_ICC_POWER_OFF = 0x63
@@ -456,5 +637,7 @@ class UsbCcidCardChannel(
         const val CCID_ICC_STATUS_NOT_PRESENT = 2
         const val MAX_CCID_PAYLOAD_LENGTH = 65_536
         const val MAX_SEQ_MISMATCH_SKIP = 12
+        const val T1_MAX_INF_LEN = 254
+        const val T1_MAX_EXCHANGE_STEPS = 24
     }
 }

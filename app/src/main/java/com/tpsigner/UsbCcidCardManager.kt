@@ -161,37 +161,41 @@ class UsbCcidCardManager(
         if (transports.isEmpty()) return
 
         val openErrors = mutableListOf<String>()
+        val slotsToTry = intArrayOf(0, 1, 2, 3)
         for (transport in transports) {
-            val connection = usbManager.openDevice(device) ?: run {
-                onError("无法打开 USB 读卡器，请检查 OTG 或连接线")
+            for (slot in slotsToTry) {
+                val connection = usbManager.openDevice(device) ?: run {
+                    onError("无法打开 USB 读卡器，请检查 OTG 或连接线")
+                    return
+                }
+
+                val newChannel = try {
+                    UsbCcidCardChannel(
+                        device = device,
+                        connection = connection,
+                        ccidInterface = transport.ccidInterface,
+                        bulkIn = transport.bulkIn,
+                        bulkOut = transport.bulkOut,
+                        slot = slot
+                    )
+                } catch (error: Throwable) {
+                    openErrors += "if#${transport.ccidInterface.id} slot=$slot in=${transport.bulkIn.addressHex()} out=${transport.bulkOut.addressHex()}: ${error.message ?: error.javaClass.simpleName}"
+                    runCatching { connection.close() }
+                    continue
+                }
+
+                if (!newChannel.probeApduHealth()) {
+                    openErrors += "if#${transport.ccidInterface.id} slot=$slot in=${transport.bulkIn.addressHex()} out=${transport.bulkOut.addressHex()}: APDU 探测失败（疑似非 ISO7816 通道） atr=${newChannel.getAtrHex()}"
+                    runCatching { newChannel.close() }
+                    continue
+                }
+
+                disconnectCurrent(notify = false)
+                channel = newChannel
+                connectedDeviceId = device.deviceId
+                listener?.onConnected(newChannel)
                 return
             }
-
-            val newChannel = try {
-                UsbCcidCardChannel(
-                    device = device,
-                    connection = connection,
-                    ccidInterface = transport.ccidInterface,
-                    bulkIn = transport.bulkIn,
-                    bulkOut = transport.bulkOut
-                )
-            } catch (error: Throwable) {
-                openErrors += "if#${transport.ccidInterface.id} in=${transport.bulkIn.addressHex()} out=${transport.bulkOut.addressHex()}: ${error.message ?: error.javaClass.simpleName}"
-                runCatching { connection.close() }
-                continue
-            }
-
-            if (!newChannel.probeApduHealth()) {
-                openErrors += "if#${transport.ccidInterface.id} in=${transport.bulkIn.addressHex()} out=${transport.bulkOut.addressHex()}: APDU 探测失败（疑似非 ISO7816 通道）"
-                runCatching { newChannel.close() }
-                continue
-            }
-
-            disconnectCurrent(notify = false)
-            channel = newChannel
-            connectedDeviceId = device.deviceId
-            listener?.onConnected(newChannel)
-            return
         }
 
         if (openErrors.isNotEmpty()) {
