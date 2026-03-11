@@ -25,6 +25,10 @@ data class MainUiState(
     val parsedSummary: String = "",
     val transferInfo: String = "",
     val dappInfo: String = "",
+    val relayHint: String = "",
+    val relayPayloadPages: List<String> = emptyList(),
+    val relayPageIndex: Int = 0,
+    val relayQr: Bitmap? = null,
     val reviewRequired: Boolean = false,
     val reviewConfirmed: Boolean = false,
     val parsedRequest: TpSignRequest? = null,
@@ -67,6 +71,10 @@ class MainViewModel : ViewModel() {
                 parsedSummary = "",
                 transferInfo = "",
                 dappInfo = "",
+                relayHint = "",
+                relayPayloadPages = emptyList(),
+                relayPageIndex = 0,
+                relayQr = null,
                 reviewRequired = false,
                 reviewConfirmed = false,
                 parseMessage = "",
@@ -96,12 +104,15 @@ class MainViewModel : ViewModel() {
     }
 
     fun parseCurrentPayload() {
-        if (!ensureUnlocked()) return
-        parseAndApply(_uiState.value.inputPayload)
+        val payload = _uiState.value.inputPayload.trim()
+        if (payload.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "请先扫码或粘贴 TP 请求") }
+            return
+        }
+        parseAndApply(payload)
     }
 
     fun onScanResult(rawContent: String): ScanHandleResult {
-        if (!ensureUnlocked()) return ScanHandleResult.Done
         if (rawContent.isBlank()) return ScanHandleResult.Done
         return parseAndApply(rawContent.trim())
     }
@@ -200,6 +211,38 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun showPreviousRelayPage() {
+        val state = _uiState.value
+        if (state.relayPayloadPages.isEmpty()) return
+        val nextIndex = if (state.relayPageIndex <= 0) {
+            state.relayPayloadPages.lastIndex
+        } else {
+            state.relayPageIndex - 1
+        }
+        _uiState.update {
+            it.copy(
+                relayPageIndex = nextIndex,
+                relayQr = generateQrBitmap(state.relayPayloadPages[nextIndex])
+            )
+        }
+    }
+
+    fun showNextRelayPage() {
+        val state = _uiState.value
+        if (state.relayPayloadPages.isEmpty()) return
+        val nextIndex = if (state.relayPageIndex >= state.relayPayloadPages.lastIndex) {
+            0
+        } else {
+            state.relayPageIndex + 1
+        }
+        _uiState.update {
+            it.copy(
+                relayPageIndex = nextIndex,
+                relayQr = generateQrBitmap(state.relayPayloadPages[nextIndex])
+            )
+        }
+    }
+
     fun onCardConnected(channel: CardChannel) {
         val snapshot = _uiState.value
         when {
@@ -244,11 +287,11 @@ class MainViewModel : ViewModel() {
                             digestHex = "",
                             signedResult = "",
                             signerAddress = "",
-                            transferInfo = "",
-                            dappInfo = "",
-                            reviewRequired = false,
-                            reviewConfirmed = false,
-                            parseMessage = "解锁成功，钱包地址已显示。现在请扫码签名请求",
+                            parseMessage = if (it.parsedRequest == null) {
+                                "解锁成功，钱包地址已显示。现在请扫码签名请求"
+                            } else {
+                                "解锁成功，已保留当前 TP 请求，可直接贴卡签名"
+                            },
                             errorMessage = ""
                         )
                     }
@@ -346,6 +389,12 @@ class MainViewModel : ViewModel() {
                     val summary = buildSummary(parsed.request)
                     val transferInfo = buildTransferInfo(parsed.request)
                     val dappInfo = buildDappInfo(parsed.request)
+                    val relay = RelayQrCodec.buildRelayPayloads(parsed.request)
+                    val relayHint = if (relay.isFragmented) {
+                        "已转成 ${relay.payloads.size} 张静态二维码，默认每 1 秒自动循环切换。"
+                    } else {
+                        "已生成 1 张静态二维码，可直接给树莓派扫描。"
+                    }
                     _uiState.update {
                         it.copy(
                             inputPayload = payload,
@@ -353,9 +402,13 @@ class MainViewModel : ViewModel() {
                             parsedSummary = summary,
                             transferInfo = transferInfo,
                             dappInfo = dappInfo,
+                            relayHint = relayHint,
+                            relayPayloadPages = relay.payloads,
+                            relayPageIndex = 0,
+                            relayQr = generateQrBitmap(relay.payloads.first()),
                             reviewRequired = true,
                             reviewConfirmed = false,
-                            parseMessage = "请求解析成功。请先核对转账/合约和 DApp 信息，再允许签名",
+                            parseMessage = "请求解析成功。请先核对转账/合约和 DApp 信息；下方已生成树莓派静态中转二维码。",
                             fragmentMessage = "",
                             errorMessage = ""
                         )
@@ -408,6 +461,10 @@ class MainViewModel : ViewModel() {
                     parsedSummary = "",
                     transferInfo = "",
                     dappInfo = "",
+                    relayHint = "",
+                    relayPayloadPages = emptyList(),
+                    relayPageIndex = 0,
+                    relayQr = null,
                     reviewRequired = false,
                     reviewConfirmed = false,
                     errorMessage = error.message ?: "解析失败"
@@ -441,6 +498,7 @@ class MainViewModel : ViewModel() {
             is TpSignTransactionRequest -> {
                 val tx = request.txData
                 val to = tx["to"]?.jsonPrimitive?.contentOrNull ?: "-"
+                val address = request.address ?: tx["from"]?.jsonPrimitive?.contentOrNull ?: "-"
                 val valueRaw = tx["value"]?.jsonPrimitive?.contentOrNull ?: "0x0"
                 val valueWei = parseQuantity(valueRaw)
                 val valueEth = formatEth(valueWei)
@@ -459,6 +517,7 @@ class MainViewModel : ViewModel() {
                 val nonce = tx["nonce"]?.jsonPrimitive?.contentOrNull ?: "-"
 
                 buildString {
+                    appendLine("address: $address")
                     appendLine("to: $to")
                     appendLine("value: $valueRaw wei (~$valueEth ETH)")
                     appendLine("nonce: $nonce")
@@ -503,11 +562,13 @@ class MainViewModel : ViewModel() {
         val to = tx["to"]?.toString() ?: ""
         val value = tx["value"]?.toString() ?: ""
         val type = tx["type"]?.toString() ?: "0x0"
+        val address = request.address ?: tx["from"]?.toString() ?: "-"
 
         return buildString {
             appendLine("action: ${request.action}")
             appendLine("network: ${request.network}")
             appendLine("chainId: ${request.chainId} (${chainName(request.chainId)})")
+            appendLine("address: $address")
             appendLine("type: $type")
             appendLine("nonce: $nonce")
             appendLine("to: $to")

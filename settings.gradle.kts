@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "tp-satochip-signer"
 include(":app")
 include(":satochip-lib")
+include(":pi-signer")

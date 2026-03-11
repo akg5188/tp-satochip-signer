@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LOG_DIR="$ROOT_DIR/logs"
+LOG_FILE="$LOG_DIR/seedsigner-build-live.log"
+APP_DIR="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/opt"
+APP_SETTINGS_TEMPLATE="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/default-settings.json"
+APP_SETTINGS_TARGET="$APP_DIR/src/settings.json"
+L10N_SRC="$ROOT_DIR/seedsigner-os/opt/rootfs-overlay/app-assets/seedsigner-translations/l10n"
+L10N_DST="$APP_DIR/src/seedsigner/resources/seedsigner-translations/l10n"
+ASCII_BASE="${TP_ASCII_BASE:-$HOME/tp-signer-ascii}"
+ASCII_ROOT="${TP_ASCII_ROOT:-$ASCII_BASE/root}"
+ASCII_BUILD_DIR="${TP_BUILD_DIR:-$ASCII_BASE/output}"
+ASCII_IMAGE_DIR="${TP_IMAGE_DIR:-$ASCII_BASE/images}"
+ASCII_CCACHE_DIR="${TP_CCACHE_DIR:-$ASCII_BASE/ccache}"
+ASCII_CCACHE_TEMPDIR="${TP_CCACHE_TEMPDIR:-$ASCII_BASE/ccache-tmp}"
+
+mkdir -p "$LOG_DIR"
+mkdir -p "$ASCII_BUILD_DIR" "$ASCII_IMAGE_DIR" "$ASCII_CCACHE_DIR" "$ASCII_CCACHE_TEMPDIR"
+rm -rf "$ASCII_ROOT"
+ln -s "$ROOT_DIR" "$ASCII_ROOT"
+
+mkdir -p "$(dirname "$L10N_DST")"
+rm -rf "$L10N_DST"
+cp -a "$L10N_SRC" "$L10N_DST"
+cp "$APP_SETTINGS_TEMPLATE" "$APP_SETTINGS_TARGET"
+(
+  cd "$APP_DIR"
+  python3 setup.py compile_catalog
+)
+
+cd "$ASCII_ROOT/seedsigner-os/opt"
+export PATH=/tmp/mtools-local/root/usr/bin:$PATH
+export CCACHE_DIR="$ASCII_CCACHE_DIR"
+export CCACHE_TEMPDIR="$ASCII_CCACHE_TEMPDIR"
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+export TP_BUILD_DIR="$ASCII_BUILD_DIR"
+export TP_IMAGE_DIR="$ASCII_IMAGE_DIR"
+
+./build.sh --pi0 --smartcard --skip-repo --no-clean 2>&1 | tee "$LOG_FILE"

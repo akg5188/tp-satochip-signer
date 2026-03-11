@@ -67,6 +67,7 @@ data class TpSignTransactionRequest(
     override val dappName: String?,
     override val dappUrl: String?,
     override val dappSource: String?,
+    val address: String?,
     val txData: JsonObject,
     override val rawPayload: String
 ) : TpSignRequest
@@ -225,6 +226,30 @@ object TpQrCodec {
         }
     }
 
+    fun buildRelayRequest(request: TpSignRequest): String {
+        val dataJson = buildRelayData(request).toString()
+        return if (request.format == TpRequestFormat.LEGACY) {
+            val query = linkedMapOf(
+                "v" to request.version,
+                "requestId" to request.requestId,
+                "action" to request.action,
+                "actionId" to (request.actionId ?: request.dataId),
+                "data" to dataJson
+            )
+            "${request.namespace}:${request.action}-?" + buildQuery(query)
+        } else {
+            val query = linkedMapOf(
+                "version" to request.version,
+                "protocol" to request.protocol,
+                "network" to request.network,
+                "chain_id" to request.chainId.toString(),
+                "requestId" to request.requestId,
+                "data" to dataJson
+            )
+            "${request.namespace}:${request.action}-" + buildQuery(query)
+        }
+    }
+
     fun buildSignTransactionResponse(request: TpSignTransactionRequest, rawTransaction: String): String {
         val responseData = buildJsonObject {
             put("rawTransaction", JsonPrimitive(rawTransaction))
@@ -257,6 +282,35 @@ object TpQrCodec {
             buildLegacyResponse(request, responseAction, request.action, responseData)
         } else {
             buildModernResponse(request, responseAction, responseData)
+        }
+    }
+
+    private fun buildRelayData(request: TpSignRequest): JsonObject {
+        return buildJsonObject {
+            request.dappName?.takeIf { it.isNotBlank() }?.let { put("dappName", JsonPrimitive(it)) }
+            request.dappUrl?.takeIf { it.isNotBlank() }?.let { put("dappUrl", JsonPrimitive(it)) }
+            request.dappSource?.takeIf { it.isNotBlank() }?.let { put("source", JsonPrimitive(it)) }
+            request.dataId?.takeIf { it.isNotBlank() }?.let { put("id", JsonPrimitive(it)) }
+
+            when (request) {
+                is TpSignTransactionRequest -> {
+                    request.address?.takeIf { it.isNotBlank() }?.let { put("address", JsonPrimitive(it)) }
+                    put("txData", request.txData)
+                }
+                is TpSignPersonalMessageRequest -> {
+                    request.address?.takeIf { it.isNotBlank() }?.let { put("address", JsonPrimitive(it)) }
+                    put("message", JsonPrimitive(request.message))
+                }
+                is TpSignTypedDataRequest -> {
+                    request.address?.takeIf { it.isNotBlank() }?.let { put("address", JsonPrimitive(it)) }
+                    val parsedJson = runCatching { json.parseToJsonElement(request.typedDataJson) }.getOrNull()
+                    if (parsedJson != null) {
+                        put("message", parsedJson)
+                    } else {
+                        put("message", JsonPrimitive(request.typedDataJson))
+                    }
+                }
+            }
         }
     }
 
@@ -297,6 +351,9 @@ object TpQrCodec {
             null -> context.dataJson
             else -> tx.jsonObject
         }
+        val address = context.dataJson["address"]?.jsonPrimitive?.contentOrNull
+            ?: txData["from"]?.jsonPrimitive?.contentOrNull
+            ?: txData["fromAddress"]?.jsonPrimitive?.contentOrNull
 
         val txChainId = txData["chainId"]?.jsonPrimitive?.contentOrNull
         val chainId = parseOptionalChainId(txChainId ?: context.queryChainIdRaw)
@@ -316,6 +373,7 @@ object TpQrCodec {
             dappName = context.dappName,
             dappUrl = context.dappUrl,
             dappSource = context.dappSource,
+            address = address,
             txData = txData,
             rawPayload = context.rawPayload
         )

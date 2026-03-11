@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# Run the mdev daemon
+#
+
+DAEMON="mdev"
+PIDFILE="/var/run/$DAEMON.pid"
+
+ensure_devnode() {
+	name="$1"
+	type="$2"
+	major="$3"
+	minor="$4"
+	mode="$5"
+
+	if [ -e "/dev/$name" ] && [ ! -c "/dev/$name" ]; then
+		rm -f "/dev/$name"
+	fi
+
+	if [ ! -c "/dev/$name" ]; then
+		mknod -m "$mode" "/dev/$name" "$type" "$major" "$minor"
+	fi
+}
+
+start() {
+	# BusyBox init can create plain files like /dev/null via shell redirection
+	# before mdev is running. Repair the critical device nodes first.
+	ensure_devnode null c 1 3 666
+	ensure_devnode zero c 1 5 666
+	ensure_devnode random c 1 8 666
+	ensure_devnode urandom c 1 9 666
+
+	echo -n "Starting $DAEMON... "
+	start-stop-daemon -S -b -m -p $PIDFILE -x /sbin/mdev -- -df
+	[ $? -eq 0 ] && echo "OK" || echo "ERROR"
+
+	# # coldplug modules
+	# find /sys/ -name modalias -print0 | \
+	# 	xargs -0 sort -u | \
+	# 	tr '\n' '\0' | \
+	# 	xargs -0 modprobe -abq
+}
+
+stop() {
+	echo -n "Stopping $DAEMON... "
+	start-stop-daemon -K -p $PIDFILE
+	[ $? -eq 0 ] && echo "OK" || echo "ERROR"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+  start|stop|restart)
+	"$1"
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit $?
