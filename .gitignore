@@ -41,7 +41,7 @@ dist/system-update-*.img.xz
 dist/system-update-*.img.xz.sha256
 dist/tp-qr-relay-android-*.apk
 dist/tp-qr-relay-android-*.apk.sha256
-!dist/system-update-latest.img.xz.part-*
+!dist/system-update-latest.img.xz
 !dist/system-update-latest.img.xz.sha256
 !dist/tp-qr-relay-android-latest.apk
 !dist/tp-qr-relay-android-latest.apk.sha256

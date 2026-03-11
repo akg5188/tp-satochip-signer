@@ -16,17 +16,10 @@
 - [dist/tp-qr-relay-android-latest.apk](/home/ak/树莓派/tp-satochip-signer/dist/tp-qr-relay-android-latest.apk)
 - [dist/tp-qr-relay-android-latest.apk.sha256](/home/ak/树莓派/tp-satochip-signer/dist/tp-qr-relay-android-latest.apk.sha256)
 
-树莓派固件分片：
+树莓派固件：
 
-- [dist/system-update-latest.img.xz.part-00](/home/ak/树莓派/tp-satochip-signer/dist/system-update-latest.img.xz.part-00)
-- [dist/system-update-latest.img.xz.part-01](/home/ak/树莓派/tp-satochip-signer/dist/system-update-latest.img.xz.part-01)
-- [dist/system-update-latest.img.xz.part-02](/home/ak/树莓派/tp-satochip-signer/dist/system-update-latest.img.xz.part-02)
+- [dist/system-update-latest.img.xz](/home/ak/树莓派/tp-satochip-signer/dist/system-update-latest.img.xz)
 - [dist/system-update-latest.img.xz.sha256](/home/ak/树莓派/tp-satochip-signer/dist/system-update-latest.img.xz.sha256)
-
-说明：
-
-- 固件被拆分，是因为 GitHub 单文件限制 `100MB`
-- 使用前先把 `part-*` 拼回成一个 `img.xz`
 
 ## 文档
 
