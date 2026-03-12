@@ -26,12 +26,16 @@ rm -rf "$L10N_DST"
 cp -a "$L10N_SRC" "$L10N_DST"
 cp "$APP_SETTINGS_TEMPLATE" "$APP_SETTINGS_TARGET"
 (
-  cd "$APP_DIR"
+cd "$APP_DIR"
   python3 setup.py compile_catalog
 )
 
 cd "$ASCII_ROOT/seedsigner-os/opt"
-export PATH=/tmp/mtools-local/root/usr/bin:$PATH
+if [ -d /tmp/mtools-local/root/usr/bin ]; then
+  export PATH=/tmp/mtools-local/root/usr/bin:$PATH
+elif [ -d /tmp/mtools-local/usr/bin ]; then
+  export PATH=/tmp/mtools-local/usr/bin:$PATH
+fi
 export CCACHE_DIR="$ASCII_CCACHE_DIR"
 export CCACHE_TEMPDIR="$ASCII_CCACHE_TEMPDIR"
 export LC_ALL=C.UTF-8

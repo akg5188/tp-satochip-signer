@@ -27,6 +27,28 @@ rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/embit/liquid
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/pyzbar/tests
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/qrcode/tests
 
+# TP-only runtime does not use the broader SeedSigner data/tool bundles.
+rm -rf ${TARGET_DIR}/opt/electronics
+rm -rf ${TARGET_DIR}/opt/gpg_keys
+rm -rf ${TARGET_DIR}/app-assets
+rm -rf ${TARGET_DIR}/opt/tools
+rm -f ${TARGET_DIR}/opt/AGENTS.md
+rm -f ${TARGET_DIR}/opt/CHANGELOG.md
+rm -f ${TARGET_DIR}/opt/CLAUDE.md
+rm -f ${TARGET_DIR}/opt/requirements-desktop.txt
+rm -f ${TARGET_DIR}/opt/setup.cfg
+rm -f ${TARGET_DIR}/opt/setup.py
+
+# Keep only the Chinese locale font set required by the current TP-only UI.
+rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/NotoSansJP-Regular.ttf
+rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/NotoSansKR-Regular.ttf
+rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/PlemolJPConsole-Regular-S.ttf
+rm -f ${TARGET_DIR}/opt/src/seedsigner/resources/fonts/PlemolJPConsole-SemiBold-S.ttf
+
+# Remove static resources that are only used by disabled tool/screensaver flows.
+rm -rf ${TARGET_DIR}/opt/src/seedsigner/resources/diceware
+rm -rf ${TARGET_DIR}/opt/src/seedsigner/resources/img/partners
+
 # Clean up bigger python modules we don't need
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/turtle.pyc
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/pydoc.pyc

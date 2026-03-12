@@ -13,21 +13,23 @@ BUILD_TIME_LOG="${BUILD_TIME_LOG:-$HOME/tp-signer-ascii/output/build/build-time.
 OUTPUT_IMAGE_DIR="${OUTPUT_IMAGE_DIR:-$HOME/tp-signer-ascii/output/images}"
 FINAL_IMAGE_DIR="${FINAL_IMAGE_DIR:-$HOME/tp-signer-ascii/images}"
 POLL_INTERVAL="${POLL_INTERVAL:-1}"
+OFFICIAL_RUNTIME_DIR="${OFFICIAL_RUNTIME_DIR:-/home/ak/树莓派/tp-satochip-signer/.br-smartcard-runtime}"
+DIST_DIR="${DIST_DIR:-/home/ak/树莓派/tp-satochip-signer/dist}"
 DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 mkdir -p "$LOG_DIR"
 
 build_running() {
-  pgrep -af "build.sh --pi0 --smartcard --skip-repo --no-clean|O=$HOME/tp-signer-ascii/output|/home/ak/tp-signer-ascii/output" >/dev/null
-}
-
-image_ready() {
-  find "$OUTPUT_IMAGE_DIR" "$FINAL_IMAGE_DIR" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.xz' \) 2>/dev/null | grep -q .
+  pgrep -af "build.sh --pi0 --smartcard --skip-repo --no-clean|O=$HOME/tp-signer-ascii/output|/home/ak/tp-signer-ascii/output|O=$OFFICIAL_RUNTIME_DIR|$OFFICIAL_RUNTIME_DIR|build_official_pi0_base_image.sh" >/dev/null
 }
 
 latest_image() {
-  find "$OUTPUT_IMAGE_DIR" "$FINAL_IMAGE_DIR" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.xz' \) 2>/dev/null | sort | tail -n 1
+  find "$OUTPUT_IMAGE_DIR" "$FINAL_IMAGE_DIR" "$DIST_DIR" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.xz' \) -newermt "@$WATCH_START_EPOCH" 2>/dev/null | sort | tail -n 1
+}
+
+image_ready() {
+  find "$OUTPUT_IMAGE_DIR" "$FINAL_IMAGE_DIR" "$DIST_DIR" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.xz' \) -newermt "@$WATCH_START_EPOCH" 2>/dev/null | grep -q .
 }
 
 latest_error() {
@@ -60,6 +62,7 @@ write_state() {
 SEEN_RUNNING=$SEEN_RUNNING
 LAST_STATUS=$LAST_STATUS
 LAST_ERROR_HASH=$LAST_ERROR_HASH
+WATCH_START_EPOCH=$WATCH_START_EPOCH
 EOF
 }
 
@@ -67,6 +70,7 @@ load_state() {
   SEEN_RUNNING=0
   LAST_STATUS="init"
   LAST_ERROR_HASH=""
+  WATCH_START_EPOCH="$(date +%s)"
 
   if [[ -f "$STATE_FILE" ]]; then
     # shellcheck disable=SC1090
@@ -125,6 +129,15 @@ start_daemon() {
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     sleep 1
   fi
+
+  local start_epoch
+  start_epoch="$(date +%s)"
+  cat >"$STATE_FILE" <<EOF
+SEEN_RUNNING=0
+LAST_STATUS=init
+LAST_ERROR_HASH=
+WATCH_START_EPOCH=$start_epoch
+EOF
 
   nohup "$0" --watch >>"$WATCH_LOG" 2>&1 &
   echo "$!" >"$PID_FILE"
